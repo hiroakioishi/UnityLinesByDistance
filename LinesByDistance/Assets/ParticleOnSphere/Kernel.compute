@@ -1,0 +1,114 @@
+﻿// -----------------------------------------------------------------
+// kernels
+// -----------------------------------------------------------------
+#pragma kernel CSUpdate
+#pragma kernel CSCopyVertex
+
+// -----------------------------------------------------------------
+// Constants
+// -----------------------------------------------------------------
+#define NUM_THREAD_X 256
+#define PI 3.14159265359
+
+// -----------------------------------------------------------------
+// Structures
+// -----------------------------------------------------------------
+struct ParticleData
+{
+	float3 velocity;
+	float3 position;
+	float  age;
+	float  pad0;
+};
+
+// -----------------------------------------------------------------
+// Resources and Variables
+// -----------------------------------------------------------------
+RWStructuredBuffer<ParticleData> _ParticleBuffer;
+RWStructuredBuffer<float3>       _VertexBuffer;
+
+float4 _LifeParams;
+float  _DeltaTime;
+float  _Velocity;
+float  _Radius;
+float  _SurfaceLayerNum;
+float  _Timer;
+float  _Throttle;
+
+// -----------------------------------------------------------------
+// Functions
+// -----------------------------------------------------------------
+float rand(float2 co) {
+	return frac(sin(dot(co.xy, float2(12.9898, 78.233))) * 43758.5453);
+}
+
+float3 RandomInsideUnitSphere(float idx)
+{
+	float phi = 2.0 * PI * rand(float2(idx, 0.0));
+	float th = 0.05 + acos(1.0 - 2.0 * rand(float2(idx, 0.1)));
+	float r = pow(rand(float2(idx, 0.2)), 0.333333333);
+
+	float x = r * sin(th) * cos(phi);
+	float z = r * sin(th) * sin(phi);
+	float y = r * cos(th);
+
+	return float3(x, y, z);
+}
+
+// -----------------------------------------------------------------
+// Kernel Functions
+// -----------------------------------------------------------------
+// パーティクルの更新
+[numthreads(NUM_THREAD_X, 1, 1)]
+void CSUpdate
+(
+	uint3 DTid : SV_DispatchThreadID,
+	uint3 GTid : SV_GroupThreadID,
+	uint3 Gid  : SV_GroupID,
+	uint  GI   : SV_GroupIndex
+)
+{
+	uint idx = DTid.x;
+
+	float3 velocity = _ParticleBuffer[idx].velocity;
+	float3 position = _ParticleBuffer[idx].position;
+	float  age      = _ParticleBuffer[idx].age;
+
+	// update
+	position += velocity * _DeltaTime;
+	age += lerp(_LifeParams.x, _LifeParams.y, rand(float2(idx, 0.0))) * _DeltaTime;
+
+	if (age > 1.0)
+	{
+		// velcoity
+		velocity = RandomInsideUnitSphere(idx + 0.0f + _Timer) * _Velocity;
+
+		// position
+		float4 offset = rand(float2(idx, 0.1)) < _Throttle ? float4(0, 0, 0, 1) : float4(1e6, 1e6, 1e6, 1e6);
+		float3 newPos = RandomInsideUnitSphere(idx + 0.5f + _Timer);
+		float  radius = length(newPos);
+		float  layer = (ceil(radius / (1.0/_SurfaceLayerNum))) / _SurfaceLayerNum;
+		position = normalize(newPos) * layer * _Radius * offset.w + offset.xyz;
+		
+		// age
+		age      = 0.0;
+	}
+
+	_ParticleBuffer[idx].velocity = velocity;
+	_ParticleBuffer[idx].position = position;
+	_ParticleBuffer[idx].age      = age;
+}
+
+// パーティクルの位置データをコピー
+[numthreads(NUM_THREAD_X, 1, 1)]
+void CSCopyVertex
+(
+	uint3 DTid : SV_DispatchThreadID,
+	uint3 GTid : SV_GroupThreadID,
+	uint3 Gid : SV_GroupID,
+	uint  GI : SV_GroupIndex
+)
+{
+	uint idx = DTid.x;
+	_VertexBuffer[DTid.x] = _ParticleBuffer[DTid.x].position;
+}

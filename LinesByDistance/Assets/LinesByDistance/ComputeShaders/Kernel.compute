@@ -1,0 +1,121 @@
+﻿// -----------------------------------------------------------------
+// kernels
+// -----------------------------------------------------------------
+#pragma kernel CSUpdate
+#pragma kernel CSUpdate_Shared
+
+// -----------------------------------------------------------------
+// Constants
+// -----------------------------------------------------------------
+#define NUM_THREAD_X 256
+#define NUM_THREAD_Y 1
+#define NUM_THREAD_Z 1
+
+// -----------------------------------------------------------------
+// Structures
+// -----------------------------------------------------------------
+struct LineData
+{
+	float3 position0;
+	float  alpha0;
+	float3 position1;
+	float  alpha1;
+};
+
+// -----------------------------------------------------------------
+// Resources and Variables
+// -----------------------------------------------------------------
+StructuredBuffer      <float3>   _VertexBufferRead;
+AppendStructuredBuffer<LineData> _LineBufferWrite;
+RWStructuredBuffer    <int>      _CounterBuffer;
+
+int _VertexNum;
+int _MaxLineNum;
+
+float _MinDist;
+float _MaxDist;
+
+// -----------------------------------------------------------------
+// Kernel Functions
+// -----------------------------------------------------------------
+// 更新
+[numthreads(NUM_THREAD_X, 1, 1)]
+void CSUpdate(uint3 DTid : SV_DispatchThreadID)
+{
+	uint idx = DTid.x;
+
+	float3 P_position = _VertexBufferRead[idx].xyz;
+
+	int count = 0;
+	int j;
+	for (j = idx; j < _VertexNum; j++)
+	{
+		float3 N_position = _VertexBufferRead[j];
+		float3 diff = N_position - P_position;
+		float  dist = sqrt(dot(diff, diff));
+		if (dist > _MinDist && dist < _MaxDist)
+		{
+			count = _CounterBuffer.IncrementCounter();
+			if (count <= _MaxLineNum)
+			{
+				LineData ld;
+				ld.position0 = P_position;
+				ld.alpha0 = 1.0;
+				ld.position1 = N_position;
+				ld.alpha1 = 1.0;
+				_LineBufferWrite.Append(ld);
+			}
+		}
+	}
+}
+
+// 更新(シェアードメモリ使用)
+groupshared float3 shared_pos[NUM_THREAD_X];
+
+[numthreads(NUM_THREAD_X, 1, 1)]
+void CSUpdate_Shared
+(
+	uint3 DTid : SV_DispatchThreadID,
+	uint3 GTid : SV_GroupThreadID,
+	uint3 Gid  : SV_GroupID,
+	uint  GI   : SV_GroupIndex
+)
+{
+	uint idx = DTid.x;
+
+	float3 P_position = _VertexBufferRead[idx].xyz;
+
+	[loop]
+	for (uint N_block_ID = 0; N_block_ID < (uint)_VertexNum; N_block_ID += NUM_THREAD_X)
+	{
+		shared_pos[GI] = _VertexBufferRead[N_block_ID + GI];
+
+		GroupMemoryBarrierWithGroupSync();
+		for (int N_tile_ID = 0; N_tile_ID < NUM_THREAD_X; N_tile_ID++)
+		{
+
+			float3 N_position = shared_pos[N_tile_ID].xyz;
+
+			float3 diff = P_position - N_position;
+			float  dist = sqrt(dot(diff, diff));
+
+			if (dist > _MinDist && dist < _MaxDist)
+			{
+				// ラインをカウント
+				int count = _CounterBuffer.IncrementCounter();
+				// ラインが規定数を超えないように
+				if (count <= _MaxLineNum)
+				{
+					LineData ld;
+					float alpha  = 1.0;
+					ld.position0 = P_position;
+					ld.alpha0 = alpha;
+					ld.position1 = N_position;
+					ld.alpha1 = alpha;
+					_LineBufferWrite.Append(ld);
+				}
+			}
+		}
+		GroupMemoryBarrierWithGroupSync();
+	}
+}
